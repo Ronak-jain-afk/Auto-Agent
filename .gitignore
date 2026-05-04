@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+aether_workspace/
+test_workspace/
+.DS_Store
+*.log
