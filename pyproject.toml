@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auto-agent-cli"
+version = "0.1.0"
+description = "A local, LLM-powered autonomous CLI coding agent."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Ronak Jain", email = "ronakjain4448@gmail.com"}
+]
+dependencies = [
+    "requests",
+    "rich",
+    "prompt_toolkit"
+]
+
+[project.scripts]
+auto-agent = "auto_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["auto_agent*"]

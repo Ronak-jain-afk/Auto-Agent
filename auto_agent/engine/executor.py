@@ -1,6 +1,11 @@
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 from auto_agent.tools.filesystem import Workspace
 from auto_agent.core.logger import ActionLogger
 from typing import Dict, Any, List
+
+console = Console()
 
 class ActionExecutor:
     def __init__(self, workspace: Workspace, logger: ActionLogger = None):
@@ -16,7 +21,7 @@ class ActionExecutor:
             if action == "create_file":
                 content = action_obj.get("content", "")
                 if self.workspace.exists(path):
-                    confirm = input(f"⚠️  File '{path}' already exists. Overwrite? (y/n): ").lower()
+                    confirm = console.input(f"[bold yellow]⚠️  File '{path}' already exists. Overwrite? (y/n): [/bold yellow]").lower()
                     if confirm != 'y':
                         self.logger.log(action, path, "fail")
                         return f"ERROR: User denied overwrite of '{path}'."
@@ -26,28 +31,41 @@ class ActionExecutor:
                 valid, err = self.workspace.validate_syntax(path)
                 if not valid:
                     self.logger.log(action, path, "fail")
+                    console.print(f"  [red]✗[/red] [bold white]{path}[/bold white] [dim](syntax error)[/dim]")
                     return f"ERROR: File '{path}' created but has syntax errors:\n{err}"
                 
                 self.logger.log(action, path, "success")
+                console.print(f"  [green]✓[/green] [bold white]{path}[/bold white] [dim](created & validated)[/dim]")
                 return f"SUCCESS: File '{path}' created and validated."
                 
             elif action == "read_file":
                 content = self.workspace.read_file(path)
                 self.logger.log(action, str(path), "success")
+                console.print(f"  [blue]📖[/blue] [bold white]{path}[/bold white]")
+                # If it's a single file and a python file, try to show syntax
+                if isinstance(path, str) and path.endswith(".py"):
+                    from rich.syntax import Syntax
+                    # We need to strip the line numbers added by Workspace for highlighting to work perfectly, 
+                    # but Workspace added them for the LLM. 
+                    # For the user, we can just show the raw content if we read it again or if we strip them.
+                    # Actually, Workspace.read_file returns numbered lines. 
+                    # Let's just show it as is for now or use a simple Panel.
                 return f"SUCCESS: Read file(s):\n{content}"
                 
             elif action == "list_directory":
                 files = self.workspace.list_directory(path or ".")
                 self.logger.log(action, path, "success")
+                console.print(f"  [blue]📂[/bold blue] [bold white]{path or '.'}[/bold white]")
                 return f"SUCCESS: Directory listing for '{path}': {', '.join(files)}"
                 
             elif action == "delete_file":
-                confirm = input(f"⚠️  Are you sure you want to delete '{path}'? (y/n): ").lower()
+                confirm = console.input(f"[bold red]⚠️  Are you sure you want to delete '{path}'? (y/n): [/bold red]").lower()
                 if confirm != 'y':
                     self.logger.log(action, path, "fail")
                     return f"ERROR: User denied deletion of '{path}'."
                 self.workspace.delete_file(path)
                 self.logger.log(action, path, "success")
+                console.print(f"  [red]🗑️[/red] [bold white]{path}[/bold white]")
                 return f"SUCCESS: Deleted '{path}'."
                 
             elif action == "edit_file":
@@ -62,9 +80,11 @@ class ActionExecutor:
                 valid, err = self.workspace.validate_syntax(path)
                 if not valid:
                     self.logger.log(action, path, "fail")
+                    console.print(f"  [red]✗[/red] [bold white]{path}[/bold white] [dim](edit introduced syntax error)[/dim]")
                     return f"ERROR: Text replaced in '{path}' but introduced syntax errors:\n{err}"
                 
                 self.logger.log(action, path, "success")
+                console.print(f"  [green]📝[/green] [bold white]{path}[/bold white] [dim](edited & validated)[/dim]")
                 return f"SUCCESS: Replaced text in '{path}' and validated."
                 
             elif action == "read_file_lines":
@@ -75,6 +95,7 @@ class ActionExecutor:
                     return "ERROR: 'read_file_lines' requires 'start_line' and 'end_line'."
                 content = self.workspace.read_file_lines(path, start, end)
                 self.logger.log(action, path, "success")
+                console.print(f"  [blue]📑[/blue] [bold white]{path}[/bold white] [dim](lines {start}-{end})[/dim]")
                 return f"SUCCESS: Read lines {start}-{end} of '{path}':\n{content}"
 
             elif action == "edit_file_lines":
@@ -90,9 +111,11 @@ class ActionExecutor:
                 valid, err = self.workspace.validate_syntax(path)
                 if not valid:
                     self.logger.log(action, path, "fail")
+                    console.print(f"  [red]✗[/red] [bold white]{path}[/bold white] [dim](lines {start}-{end} edit error)[/dim]")
                     return f"ERROR: Lines {start}-{end} replaced in '{path}' but introduced syntax errors:\n{err}"
                 
                 self.logger.log(action, path, "success")
+                console.print(f"  [green]✏️[/green] [bold white]{path}[/bold white] [dim](lines {start}-{end} edited & validated)[/dim]")
                 return f"SUCCESS: Replaced lines {start}-{end} in '{path}' and validated."
                 
             elif action == "run_command":
@@ -100,6 +123,14 @@ class ActionExecutor:
                 if not command:
                     self.logger.log(action, "N/A", "fail")
                     return "ERROR: Missing 'command' for 'run_command' action."
+                
+                # Security: Explicit confirmation for all commands
+                confirm = console.input(f"[bold red]⚠️  The agent wants to run:[/bold red] [dim]{command}[/dim]\n[bold red]Allow? (y/n): [/bold red]").lower()
+                if confirm != 'y':
+                    self.logger.log(action, f"cmd: {command[:50]}", "fail")
+                    return f"ERROR: User denied execution of command: {command}"
+
+                console.print(f"  [yellow]⚡[/yellow] [bold white]Running:[/bold white] [dim]{command}[/dim]")
                 output, success = self.workspace.run_command(command)
                 status = "success" if success else "fail"
                 self.logger.log(action, f"cmd: {command[:50]}", status)
@@ -110,6 +141,7 @@ class ActionExecutor:
                 content = action_obj.get("content")
                 self.workspace.update_memory(content)
                 self.logger.log(action, "MEMORY.md", "success")
+                console.print(f"  [magenta]🧠[/magenta] [bold white]MEMORY.md[/bold white] [dim](updated)[/dim]")
                 return "SUCCESS: MEMORY.md updated."
                 
             elif action == "search_regex":
@@ -118,12 +150,14 @@ class ActionExecutor:
                     return "ERROR: 'search_regex' requires a 'pattern' field."
                 results = self.workspace.search_regex(pattern)
                 self.logger.log(action, f"regex: {pattern}", "success")
+                console.print(f"  [cyan]🔍[/cyan] [bold white]Regex:[/bold white] [dim]{pattern}[/dim]")
                 return f"SUCCESS: Search results for regex '{pattern}':\n{results}"
 
             elif action == "find_symbols":
                 query = action_obj.get("query", "")
                 results = self.workspace.find_symbols(query)
                 self.logger.log(action, f"query: {query}", "success")
+                console.print(f"  [cyan]🧬[/cyan] [bold white]Symbols:[/bold white] [dim]{query or 'all'}[/dim]")
                 return f"SUCCESS: Symbol search results for '{query}':\n{results}"
 
             elif action == "finish":
@@ -136,6 +170,7 @@ class ActionExecutor:
                 
         except Exception as e:
             self.logger.log(action, path, "fail")
+            console.print(f"  [red]⚠[/red] [bold red]Error executing {action}:[/bold red] {e}")
             return f"ERROR executing '{action}' on '{path}': {str(e)}"
 
     def execute_batch(self, actions: List[Dict[str, Any]]) -> List[str]:

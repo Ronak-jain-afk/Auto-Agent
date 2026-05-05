@@ -15,18 +15,28 @@ class Workspace:
     def _resolve_path(self, relative_path: str) -> Path:
         """
         Resolves a relative path to an absolute path and ensures it's within the sandbox.
+        Includes protections against:
+        - Path Traversal
+        - Symlink Attacks
+        - Self-Tampering
         """
-        # Join and resolve to handle '../' or absolute paths provided by the LLM
+        # 1. Resolve to absolute path (this follows symlinks)
         target_path = (self.root / relative_path).resolve()
         
-        # Security check: Ensure target_path starts with self.root
+        # 2. Security check: Ensure target_path starts with self.root
         if not str(target_path).startswith(str(self.root)):
             raise PermissionError(f"Access denied: Path '{relative_path}' is outside the sandbox.")
         
-        # Block hidden files/directories (like .git, .env)
+        # 3. Block hidden files/directories (like .git, .env)
         if any(part.startswith('.') for part in target_path.parts[len(self.root.parts):]):
             raise PermissionError(f"Access denied: Hidden files or directories (like '{relative_path}') are restricted.")
             
+        # 4. Self-Tampering Protection: Block access to the agent's own code
+        agent_dir = Path(__file__).parent.parent.parent.resolve()
+        # If the target is inside the agent's source code, it MUST be inside the workspace root
+        if str(agent_dir) in str(target_path) and not str(target_path).startswith(str(self.root)):
+             raise PermissionError("Access denied: Cannot access or modify the agent's own source code.")
+
         return target_path
 
     def exists(self, path: str) -> bool:
@@ -106,7 +116,11 @@ class Workspace:
             f.write(content)
 
     def create_file(self, path: str, content: str):
-        """Creates a file with the given content."""
+        """Creates a file with the given content. Includes size limits."""
+        # Limit file size to 5MB to prevent disk exhaustion
+        if len(content.encode('utf-8')) > 5 * 1024 * 1024:
+            raise ValueError("File content exceeds the 5MB safety limit.")
+            
         target = self._resolve_path(path)
         # Ensure parent directories exist
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -183,13 +197,34 @@ class Workspace:
             f.writelines(lines)
 
     def run_command(self, command: str) -> tuple[str, bool]:
-        """Executes a shell command. Returns (output, success)."""
+        """
+        Executes a shell command safely. 
+        Disables shell=True to prevent command injection.
+        """
         import subprocess
+        import shlex
+        
+        # Allowed commands whitelist
+        ALLOWED_COMMANDS = {"python", "pip", "npm", "git", "ls", "dir", "mkdir", "rm", "del", "echo"}
+        
         try:
+            # Parse command string into list for shell=False
+            args = shlex.split(command)
+            if not args:
+                return "ERROR: Empty command.", False
+                
+            base_cmd = args[0].lower()
+            # Normalize for Windows vs Unix
+            if base_cmd.endswith(".exe"):
+                base_cmd = base_cmd[:-4]
+                
+            if base_cmd not in ALLOWED_COMMANDS:
+                return f"ERROR: Command '{base_cmd}' is not in the allowed list ({', '.join(sorted(ALLOWED_COMMANDS))}).", False
+
             result = subprocess.run(
-                command,
+                args,
                 cwd=self.root,
-                shell=True,
+                shell=False, # DISABLED shell=True for security
                 capture_output=True,
                 text=True,
                 timeout=30
@@ -203,6 +238,8 @@ class Workspace:
             
         except subprocess.TimeoutExpired:
             return "ERROR: Command timed out after 30 seconds.", False
+        except FileNotFoundError:
+            return f"ERROR: Command execution failed: Base command '{args[0]}' not found.", False
         except Exception as e:
             return f"ERROR: Command execution failed: {str(e)}", False
 

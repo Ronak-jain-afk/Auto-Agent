@@ -1,9 +1,17 @@
 import logging
+import json
 from typing import List, Dict, Any
+from rich.console import Console
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.live import Live
+from rich.text import Text
 from auto_agent.core.backend import LLMBackend
 from auto_agent.core.prompt import SYSTEM_PROMPT
 from auto_agent.core.validator import parse_and_validate_actions
 from auto_agent.engine.executor import ActionExecutor
+
+console = Console()
 
 class ExecutionLoop:
     def __init__(self, backend: LLMBackend, executor: ActionExecutor, max_iterations: int = 5):
@@ -14,8 +22,6 @@ class ExecutionLoop:
         self.summary: str = ""
 
     def run(self, user_task: str, initial_context: str = ""):
-        print(f"\n[Task]: {user_task}")
-        
         full_user_msg = user_task
         if initial_context:
             full_user_msg = f"{initial_context}\n\nTask: {user_task}"
@@ -24,7 +30,7 @@ class ExecutionLoop:
         self.summary = ""
         
         for i in range(self.max_iterations):
-            print(f"\n--- Iteration {i+1}/{self.max_iterations} ---")
+            console.print(Rule(f"Iteration {i+1}/{self.max_iterations}", style="cyan"))
             
             # Context management: Summarize if history gets too long
             if len(self.history) > 8:
@@ -33,31 +39,34 @@ class ExecutionLoop:
             # 1. Call LLM with history
             full_context = self._build_context()
             try:
-                output = self.backend.generate(prompt=full_context, system=SYSTEM_PROMPT)
+                with console.status("[bold green]Agent is thinking..."):
+                    output = self.backend.generate(prompt=full_context, system=SYSTEM_PROMPT)
                 self.history.append({"role": "assistant", "content": output})
             except RuntimeError as e:
-                print(f"[LLM Error]: {e}")
-                # Don't add failed requests to history, just retry
+                console.print(f"[bold red]LLM Error:[/bold red] {e}")
                 continue
             
-            # Debug: Print raw output
-            print(f"DEBUG: Raw LLM Output:\n{output}\n")
-            
-            # 2. Validate
+            # 2. Validate and Extract Thoughts
             actions, error = parse_and_validate_actions(output)
             
+            if actions:
+                # Try to display thoughts if available
+                thoughts = [a.get("thought") for a in actions if a.get("thought")]
+                if thoughts:
+                    console.print(Panel(Text("\n".join(thoughts), style="italic grey70"), title="🧠 Thinking", border_style="dim"))
+            
             if error:
-                print(f"[Model Output Error]: {error}")
+                console.print(f"[bold red]Model Output Error:[/bold red] {error}")
                 error_msg = f"The previous output was invalid.\n{error}\nPlease return a valid JSON array of actions."
                 self.history.append({"role": "user", "content": error_msg})
                 continue
             
             if not actions:
-                print("[Model Output]: No actions returned (stopping).")
+                console.print("[bold yellow]Model Output:[/bold yellow] No actions returned (stopping).")
                 break
                 
             # 3. Execute
-            print(f"[Actions]: {len(actions)} found.")
+            console.print(f"[bold blue]Actions:[/bold blue] {len(actions)} tasks to execute...")
             feedbacks = self.executor.execute_batch(actions)
             
             # Check if any action returned an error
@@ -65,51 +74,45 @@ class ExecutionLoop:
             
             # Check for FINISH - only exit if NO errors occurred in the batch
             if "FINISH" in feedbacks and not any_error:
-                print("[Agent]: Task finished.")
+                console.print(Panel(Text("Task completed successfully!", style="bold green"), border_style="green"))
                 break
                 
             # 4. Prepare next prompt
             feedback_str = "\n".join(feedbacks)
-            print(f"[Feedback]:\n{feedback_str}")
             self.history.append({"role": "user", "content": f"Results of previous actions:\n{feedback_str}"})
             
             if any_error:
-                print("[Agent]: Encountered error in batch. Retrying with feedback.")
+                console.print("[bold red]Agent encountered an error in the batch. Retrying with feedback...[/bold red]")
                 continue
             
         else:
-            print("\n[Warning]: Reached maximum iterations.")
+            console.print(Panel(Text("Reached maximum iterations.", style="bold yellow"), border_style="yellow"))
 
     def _summarize_history(self):
         """Uses the LLM to summarize the middle part of the history."""
-        print("[System]: History is getting long. Summarizing...")
-        
-        # Keep the original task (index 0) and the last 2 messages (context for current error/action)
-        # Summarize everything in between
-        to_summarize = self.history[1:-2]
-        if not to_summarize:
-            return
+        with console.status("[bold yellow]Summarizing conversation history..."):
+            to_summarize = self.history[1:-2]
+            if not to_summarize:
+                return
 
-        summary_prompt = "Please provide a concise summary of the progress made and the issues encountered so far in this task. Focus on facts, file changes, and current status.\n\nCONVERSATION LOG:\n"
-        for msg in to_summarize:
-            summary_prompt += f"### {msg['role'].upper()}\n{msg['content']}\n\n"
-        
-        summary_system = "You are a helpful assistant that summarizes technical conversations. Be brief and objective."
-        
-        try:
-            new_summary_part = self.backend.generate(prompt=summary_prompt, system=summary_system, max_tokens=256)
+            summary_prompt = "Please provide a concise summary of the progress made and the issues encountered so far in this task. Focus on facts, file changes, and current status.\n\nCONVERSATION LOG:\n"
+            for msg in to_summarize:
+                summary_prompt += f"### {msg['role'].upper()}\n{msg['content']}\n\n"
             
-            # Append new summary to existing summary if any
-            if self.summary:
-                self.summary = f"{self.summary}\n\nPrevious Summary Update: {new_summary_part}"
-            else:
-                self.summary = new_summary_part
+            summary_system = "You are a helpful assistant that summarizes technical conversations. Be brief and objective."
+            
+            try:
+                new_summary_part = self.backend.generate(prompt=summary_prompt, system=summary_system, max_tokens=256)
                 
-            # Keep only the first message and the last 2 messages
-            self.history = [self.history[0]] + self.history[-2:]
-            print("[System]: Summary updated and history compressed.")
-        except Exception as e:
-            print(f"[Warning]: Summarization failed: {e}")
+                if self.summary:
+                    self.summary = f"{self.summary}\n\nPrevious Summary Update: {new_summary_part}"
+                else:
+                    self.summary = new_summary_part
+                    
+                self.history = [self.history[0]] + self.history[-2:]
+                console.print("[dim yellow]Summary updated and history compressed.[/dim yellow]")
+            except Exception as e:
+                console.print(f"[bold red]Summarization failed:[/bold red] {e}")
 
     def _build_context(self) -> str:
         """Formats the history into a single string, including the summary if available."""
