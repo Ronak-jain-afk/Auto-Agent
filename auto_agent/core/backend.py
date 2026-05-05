@@ -22,7 +22,7 @@ class OllamaBackend(LLMBackend):
         self,
         prompt: str,
         system: str,
-        max_tokens: int = 512,
+        max_tokens: int = 1024,
         temperature: float = 0.2
     ) -> str:
         try:
@@ -56,7 +56,7 @@ class LlamaCppBackend(LLMBackend):
         self,
         prompt: str,
         system: str,
-        max_tokens: int = 512,
+        max_tokens: int = 1024,
         temperature: float = 0.2
     ) -> str:
         try:

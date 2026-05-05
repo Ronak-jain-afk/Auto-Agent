@@ -37,8 +37,22 @@ def main():
     # 3. Initialize and run loop
     loop = ExecutionLoop(backend, executor, max_iterations=args.max_iter)
     
+    # Pre-load context: Directory listing and Memory
     try:
-        loop.run(args.task)
+        files = workspace.list_directory(".")
+        initial_context = f"Current directory contains: {', '.join(files)}"
+        
+        # Check for MEMORY.md
+        if "MEMORY.md" in files:
+            memory_content = workspace.read_file("MEMORY.md")
+            # Strip the line numbers from the memory content for the model's benefit
+            clean_memory = "\n".join([line.split(": ", 1)[1] if ": " in line else line for line in memory_content.splitlines()])
+            initial_context += f"\n\nProject Memory (MEMORY.md):\n{clean_memory}"
+    except Exception:
+        initial_context = ""
+
+    try:
+        loop.run(args.task, initial_context=initial_context)
     except KeyboardInterrupt:
         print("\nInterrupted by user. Exiting.")
     except Exception as e:

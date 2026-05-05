@@ -12,20 +12,26 @@ class ExecutionLoop:
         self.max_iterations = max_iterations
         self.history: List[Dict[str, str]] = []
 
-    def run(self, user_task: str):
+    def run(self, user_task: str, initial_context: str = ""):
         print(f"\n[Task]: {user_task}")
-        current_prompt = user_task
+        
+        full_user_msg = user_task
+        if initial_context:
+            full_user_msg = f"{initial_context}\n\nTask: {user_task}"
+            
+        self.history = [{"role": "user", "content": full_user_msg}]
         
         for i in range(self.max_iterations):
             print(f"\n--- Iteration {i+1}/{self.max_iterations} ---")
             
-            # 1. Call LLM
-            full_context = self._build_context(current_prompt)
+            # 1. Call LLM with history
+            full_context = self._build_context()
             try:
                 output = self.backend.generate(prompt=full_context, system=SYSTEM_PROMPT)
+                self.history.append({"role": "assistant", "content": output})
             except RuntimeError as e:
                 print(f"[LLM Error]: {e}")
-                current_prompt = f"The previous request failed due to a timeout or connection issue. Please continue with the original task: {user_task}"
+                # Don't add failed requests to history, just retry
                 continue
             
             # Debug: Print raw output
@@ -36,7 +42,8 @@ class ExecutionLoop:
             
             if error:
                 print(f"[Model Output Error]: {error}")
-                current_prompt = f"The previous output was invalid.\n{error}\nPlease return a valid JSON array of actions."
+                error_msg = f"The previous output was invalid.\n{error}\nPlease return a valid JSON array of actions."
+                self.history.append({"role": "user", "content": error_msg})
                 continue
             
             if not actions:
@@ -47,20 +54,43 @@ class ExecutionLoop:
             print(f"[Actions]: {len(actions)} found.")
             feedbacks = self.executor.execute_batch(actions)
             
-            # Check for FINISH
-            if "FINISH" in feedbacks:
+            # Check if any action returned an error
+            any_error = any(f.startswith("ERROR") for f in feedbacks)
+            
+            # Check for FINISH - only exit if NO errors occurred in the batch
+            if "FINISH" in feedbacks and not any_error:
                 print("[Agent]: Task finished.")
                 break
                 
             # 4. Prepare next prompt
             feedback_str = "\n".join(feedbacks)
             print(f"[Feedback]:\n{feedback_str}")
-            current_prompt = f"Results of previous actions:\n{feedback_str}\n\nWhat is your next step?"
+            self.history.append({"role": "user", "content": f"Results of previous actions:\n{feedback_str}"})
+            
+            if any_error:
+                print("[Agent]: Encountered error in batch. Retrying with feedback.")
+                continue
             
         else:
             print("\n[Warning]: Reached maximum iterations.")
 
-    def _build_context(self, current_prompt: str) -> str:
-        # Simple history concatenation for MVP
-        # In more advanced versions, we'd use a chat-style history
-        return current_prompt
+    def _build_context(self) -> str:
+        """Formats the history into a single string, always preserving the original task."""
+        if not self.history:
+            return ""
+            
+        # ALWAYS include the very first message (the user task)
+        # Then include the last 4 messages to keep context of the current error/state
+        important_history = [self.history[0]]
+        if len(self.history) > 1:
+            important_history.extend(self.history[-4:])
+        
+        context = ""
+        for msg in important_history:
+            role = msg["role"].upper()
+            content = msg["content"]
+            context += f"### {role}\n{content}\n\n"
+        
+        # Add a strict reminder at the end of every prompt
+        context += "### SYSTEM REMINDER\nIMPORTANT: YOU MUST OUTPUT A SINGLE JSON ARRAY. DO NOT CLOSE THE ARRAY UNTIL ALL ACTIONS ARE INCLUDED."
+        return context.strip()
