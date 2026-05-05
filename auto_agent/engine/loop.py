@@ -11,6 +11,7 @@ class ExecutionLoop:
         self.executor = executor
         self.max_iterations = max_iterations
         self.history: List[Dict[str, str]] = []
+        self.summary: str = ""
 
     def run(self, user_task: str, initial_context: str = ""):
         print(f"\n[Task]: {user_task}")
@@ -20,10 +21,15 @@ class ExecutionLoop:
             full_user_msg = f"{initial_context}\n\nTask: {user_task}"
             
         self.history = [{"role": "user", "content": full_user_msg}]
+        self.summary = ""
         
         for i in range(self.max_iterations):
             print(f"\n--- Iteration {i+1}/{self.max_iterations} ---")
             
+            # Context management: Summarize if history gets too long
+            if len(self.history) > 8:
+                self._summarize_history()
+
             # 1. Call LLM with history
             full_context = self._build_context()
             try:
@@ -74,19 +80,53 @@ class ExecutionLoop:
         else:
             print("\n[Warning]: Reached maximum iterations.")
 
+    def _summarize_history(self):
+        """Uses the LLM to summarize the middle part of the history."""
+        print("[System]: History is getting long. Summarizing...")
+        
+        # Keep the original task (index 0) and the last 2 messages (context for current error/action)
+        # Summarize everything in between
+        to_summarize = self.history[1:-2]
+        if not to_summarize:
+            return
+
+        summary_prompt = "Please provide a concise summary of the progress made and the issues encountered so far in this task. Focus on facts, file changes, and current status.\n\nCONVERSATION LOG:\n"
+        for msg in to_summarize:
+            summary_prompt += f"### {msg['role'].upper()}\n{msg['content']}\n\n"
+        
+        summary_system = "You are a helpful assistant that summarizes technical conversations. Be brief and objective."
+        
+        try:
+            new_summary_part = self.backend.generate(prompt=summary_prompt, system=summary_system, max_tokens=256)
+            
+            # Append new summary to existing summary if any
+            if self.summary:
+                self.summary = f"{self.summary}\n\nPrevious Summary Update: {new_summary_part}"
+            else:
+                self.summary = new_summary_part
+                
+            # Keep only the first message and the last 2 messages
+            self.history = [self.history[0]] + self.history[-2:]
+            print("[System]: Summary updated and history compressed.")
+        except Exception as e:
+            print(f"[Warning]: Summarization failed: {e}")
+
     def _build_context(self) -> str:
-        """Formats the history into a single string, always preserving the original task."""
+        """Formats the history into a single string, including the summary if available."""
         if not self.history:
             return ""
             
-        # ALWAYS include the very first message (the user task)
-        # Then include the last 4 messages to keep context of the current error/state
-        important_history = [self.history[0]]
-        if len(self.history) > 1:
-            important_history.extend(self.history[-4:])
-        
         context = ""
-        for msg in important_history:
+        
+        # 1. Add Original Task
+        context += f"### ORIGINAL TASK\n{self.history[0]['content']}\n\n"
+        
+        # 2. Add Progress Summary if available
+        if self.summary:
+            context += f"### PROGRESS SUMMARY\n{self.summary}\n\n"
+        
+        # 3. Add recent messages (skip index 0 as it's handled above)
+        for msg in self.history[1:]:
             role = msg["role"].upper()
             content = msg["content"]
             context += f"### {role}\n{content}\n\n"
