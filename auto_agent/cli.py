@@ -18,22 +18,42 @@ def startup_wizard():
     console.clear()
     console.print(Panel(Text("Auto-Agent Setup Wizard", style="bold magenta", justify="center")))
     
-    backend_type = Prompt.ask("Select LLM Backend", choices=["ollama", "llamacpp"], default="ollama")
+    backend_type = Prompt.ask(
+        "Select LLM Backend", 
+        choices=["ollama", "llamacpp", "gemini", "openai", "anthropic", "openrouter"], 
+        default="ollama"
+    )
     
     url = None
-    if Confirm.ask("Do you want to specify a custom Base URL?"):
-        default_url = "http://localhost:11434" if backend_type == "ollama" else "http://localhost:8080"
-        url = Prompt.ask("Enter Base URL", default=default_url)
+    api_key = None
+    model = None
+
+    if backend_type in ["gemini", "openai", "anthropic", "openrouter"]:
+        api_key = Prompt.ask(f"Enter {backend_type.capitalize()} API Key", password=True)
         
-    model = "gemma"
-    if backend_type == "ollama":
-        model = Prompt.ask("Enter Ollama Model Name", default="gemma")
+        # Default models
+        defaults = {
+            "gemini": "gemini-1.5-flash",
+            "openai": "gpt-4o",
+            "anthropic": "claude-3-5-sonnet-20240620",
+            "openrouter": "anthropic/claude-3.5-sonnet"
+        }
+        model = Prompt.ask(f"Enter Model Name", default=defaults[backend_type])
+    else:
+        # Local backend logic
+        if Confirm.ask("Do you want to specify a custom Base URL?"):
+            default_url = "http://localhost:11434" if backend_type == "ollama" else "http://localhost:8080"
+            url = Prompt.ask("Enter Base URL", default=default_url)
+            
+        if backend_type == "ollama":
+            model = Prompt.ask("Enter Ollama Model Name", default="gemma")
         
     workspace_path = Prompt.ask("Enter Workspace Path", default="./aether_workspace")
     
     return {
         "backend": backend_type,
         "url": url,
+        "api_key": api_key,
         "model": model,
         "workspace": workspace_path
     }
@@ -45,11 +65,13 @@ def main():
     backend_kwargs = {}
     if config["url"]:
         backend_kwargs["base_url"] = config["url"]
-    if config["backend"] == "ollama":
+    if config["api_key"]:
+        backend_kwargs["api_key"] = config["api_key"]
+    if config["model"]:
         backend_kwargs["model"] = config["model"]
     
     try:
-        with console.status("[bold green]Initializing backend..."):
+        with console.status(f"[bold green]Initializing {config['backend']} backend..."):
             backend = build_backend(config["backend"], **backend_kwargs)
     except Exception as e:
         console.print(f"[bold red]Error initializing backend:[/bold red] {e}")
